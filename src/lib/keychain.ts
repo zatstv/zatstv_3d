@@ -1,6 +1,7 @@
 import type opentype from 'opentype.js'
 import type { CrossSection, Manifold } from 'manifold-3d'
 import type { FontId } from './fonts'
+import type { TracedImage } from './image'
 import type { ManifoldToplevel } from './manifold'
 import { textToContours, type SimplePolygon, type Vec2 } from './text'
 
@@ -10,6 +11,8 @@ export const BED_SIZE = 256
 export type ShapeId = 'rect' | 'circle' | 'hexagon' | 'heart' | 'textFit'
 export type TextMode = 'relief' | 'engrave' | 'flush'
 export type HolePosition = 'left' | 'right' | 'top'
+/** 'base': la silueta es parte de la forma. 'detail': va encima, igual que el texto. */
+export type ImageRole = 'base' | 'detail'
 
 export interface KeychainParams {
   shape: ShapeId
@@ -17,7 +20,7 @@ export interface KeychainParams {
   height: number
   cornerRadius: number
   thickness: number
-  /** Margen alrededor de las letras cuando la forma es "Contorno del texto". */
+  /** Margen alrededor del texto y la imagen cuando la forma es "Contorno". */
   outlinePadding: number
 
   text: string
@@ -39,6 +42,19 @@ export interface KeychainParams {
   holeWall: number
   /** Cuánto se mete la argolla hacia dentro de la figura. */
   holeInset: number
+
+  /** Nivel de tinta (0-1) a partir del cual un píxel cuenta como figura. */
+  imageThreshold: number
+  /** Usar lo claro en vez de lo oscuro (o lo transparente en vez de lo opaco). */
+  imageInvert: boolean
+  imageRole: ImageRole
+  /** Ancho de la silueta en mm. */
+  imageSize: number
+  imageOffsetX: number
+  imageOffsetY: number
+  /** Radio de suavizado del contorno (mm); también borra detalles más finos que el doble. */
+  imageSmoothing: number
+  imageFillHoles: boolean
 }
 
 export const DEFAULT_PARAMS: KeychainParams = {
@@ -65,6 +81,15 @@ export const DEFAULT_PARAMS: KeychainParams = {
   holeDiameter: 4.5,
   holeWall: 2.5,
   holeInset: 0,
+
+  imageThreshold: 0.5,
+  imageInvert: false,
+  imageRole: 'base',
+  imageSize: 30,
+  imageOffsetX: 0,
+  imageOffsetY: 0,
+  imageSmoothing: 0.3,
+  imageFillHoles: true,
 }
 
 export interface MeshData {
@@ -75,7 +100,7 @@ export interface MeshData {
 export interface KeychainResult {
   /** Cuerpo del llavero (color principal). */
   base: MeshData
-  /** Texto y borde (segundo color). Null si no hay. */
+  /** Texto, imagen en relieve y borde (segundo color). Null si no hay. */
   detail: MeshData | null
   /** Base y detalle unidos en una sola pieza sólida (impresión a un color). */
   combined: MeshData
@@ -88,6 +113,7 @@ export function buildKeychain(
   wasm: ManifoldToplevel,
   font: opentype.Font,
   p: KeychainParams,
+  image: TracedImage | null,
 ): KeychainResult {
   const { CrossSection } = wasm
   const warnings: string[] = []
@@ -100,8 +126,15 @@ export function buildKeychain(
   }
 
   try {
-    let text2d = buildText(wasm, font, p, keep)
-    let base2d = buildBase(wasm, p, text2d, keep, warnings)
+    const text2d = buildText(wasm, font, p, keep)
+    const image2d = image ? buildImage(wasm, image, p, keep) : null
+
+    // "Detalle" es todo lo que va encima de la base en el segundo color.
+    let detail2d = unionOf(wasm, [text2d, p.imageRole === 'detail' ? image2d : null], keep)
+    let base2d = buildBase(wasm, p, unionOf(wasm, [text2d, image2d], keep), keep, warnings)
+    if (image2d && p.imageRole === 'base' && p.shape !== 'textFit') {
+      base2d = keep(base2d.add(image2d))
+    }
 
     if (p.holeEnabled) {
       const b = base2d.bounds()
@@ -114,12 +147,12 @@ export function buildKeychain(
             ? [b.max[0] - p.holeInset, cy]
             : [cx, b.max[1] - p.holeInset]
       const outerRadius = p.holeDiameter / 2 + p.holeWall
-      const ring = keep(CrossSection.circle(outerRadius, 64).translate(center))
-      const hole = keep(CrossSection.circle(p.holeDiameter / 2, 64).translate(center))
+      const ring = keep(keep(CrossSection.circle(outerRadius, 64)).translate(center))
+      const hole = keep(keep(CrossSection.circle(p.holeDiameter / 2, 64)).translate(center))
       base2d = keep(keep(base2d.add(ring)).subtract(hole))
-      if (text2d) {
+      if (detail2d) {
         const clearance = keep(hole.offset(0.8, 'Round', 2, 64))
-        text2d = keep(text2d.subtract(clearance))
+        detail2d = keep(detail2d.subtract(clearance))
       }
     }
 
@@ -127,14 +160,14 @@ export function buildKeychain(
     pieces.forEach(keep)
     if (pieces.length > 1) {
       warnings.push(
-        `La figura quedó en ${pieces.length} piezas separadas. Sube el margen, acerca las letras o mueve la argolla.`,
+        `La figura quedó en ${pieces.length} piezas separadas. Sube el margen, junta el texto y la imagen o mueve la argolla.`,
       )
     }
 
-    if (text2d && p.shape !== 'textFit') {
-      const outside = keep(text2d.subtract(base2d))
+    if (detail2d && p.shape !== 'textFit') {
+      const outside = keep(detail2d.subtract(base2d))
       if (outside.area() > 0.01) {
-        warnings.push('El texto se sale de la figura: hazlo más pequeño o agranda la figura.')
+        warnings.push('El texto o la imagen se salen de la figura: hazlos más pequeños o agranda la figura.')
       }
     }
 
@@ -142,7 +175,7 @@ export function buildKeychain(
     let base3d = keep(base2d.extrude(T))
     let detail3d: Manifold | null = null
 
-    const insideText = text2d ? keep(text2d.intersect(base2d)) : null
+    const insideText = detail2d ? keep(detail2d.intersect(base2d)) : null
     if (insideText && !insideText.isEmpty()) {
       if (p.textMode === 'relief') {
         detail3d = keep(keep(insideText.extrude(p.textDepth)).translate(0, 0, T))
@@ -237,7 +270,8 @@ function buildText(
 function buildBase(
   wasm: ManifoldToplevel,
   p: KeychainParams,
-  text2d: CrossSection | null,
+  /** Texto e imagen juntos: lo que rodea la forma "Contorno". */
+  outline: CrossSection | null,
   keep: Keep,
   warnings: string[],
 ): CrossSection {
@@ -258,16 +292,70 @@ function buildBase(
     case 'heart':
       return keep(new CrossSection(fitToBox(heartContour(), w, h), 'NonZero'))
     case 'textFit': {
-      if (!text2d) {
-        warnings.push('Escribe un texto para usar la forma "Contorno del texto".')
+      if (!outline) {
+        warnings.push('Escribe un texto o sube una imagen para usar la forma "Contorno".')
         return keep(CrossSection.square([w, h], true))
       }
-      const grown = keep(text2d.offset(p.outlinePadding, 'Round', 2, 48))
-      // Se quedan solo los contornos exteriores para rellenar los huecos de letras como "o" o "a".
-      const outers = grown.toPolygons().filter((poly) => signedArea(poly) > 0)
-      return keep(new CrossSection(outers, 'NonZero'))
+      const grown = keep(outline.offset(p.outlinePadding, 'Round', 2, 48))
+      // Se rellenan los huecos de letras como "o" o "a".
+      return keep(fillHoles(wasm, grown))
     }
   }
+}
+
+function buildImage(
+  wasm: ManifoldToplevel,
+  image: TracedImage,
+  p: KeychainParams,
+  keep: Keep,
+): CrossSection | null {
+  const { CrossSection } = wasm
+  // Primero en píxeles, para medir la silueta real (sin el fondo de la foto).
+  const traced = keep(new CrossSection(image.contours, 'EvenOdd'))
+  // Quita motas de ruido (< 0.5 % de la pieza más grande) para que no cuenten al medir.
+  const blobs = traced.decompose()
+  blobs.forEach(keep)
+  const largest = Math.max(0, ...blobs.map((blob) => blob.area()))
+  const raw = keep(CrossSection.compose(blobs.filter((blob) => blob.area() >= largest * 0.005)))
+  if (raw.isEmpty()) return null
+  const b = raw.bounds()
+  const scale = p.imageSize / Math.max(b.max[0] - b.min[0], 1e-6)
+  const cx = (b.min[0] + b.max[0]) / 2
+  const cy = (b.min[1] + b.max[1]) / 2
+  const polygons = raw.toPolygons().map((contour) =>
+    contour.map(([x, y]): Vec2 => [(x - cx) * scale + p.imageOffsetX, -(y - cy) * scale + p.imageOffsetY]),
+  )
+  // Menos vértices = operaciones más rápidas; 0.03 mm no se nota al imprimir.
+  let shape = keep(keep(new CrossSection(polygons, 'EvenOdd')).simplify(0.03))
+
+  const r = p.imageSmoothing
+  if (r > 0) {
+    // Cerrar (rellena grietas) y luego abrir (quita puntas y detalles demasiado finos para imprimir).
+    const closed = keep(keep(shape.offset(r, 'Round', 2, 32)).offset(-r, 'Round', 2, 32))
+    const opened = keep(keep(closed.offset(-r, 'Round', 2, 32)).offset(r, 'Round', 2, 32))
+    shape = keep(opened.simplify(0.03))
+  }
+  if (p.imageFillHoles) shape = keep(fillHoles(wasm, shape))
+
+  // Descarta motas sueltas de menos de 1 mm² (ruido de la foto).
+  const parts = shape.decompose()
+  parts.forEach(keep)
+  const kept = parts.filter((part) => part.area() >= 1)
+  if (kept.length === 0) return null
+  return keep(CrossSection.compose(kept))
+}
+
+function unionOf(wasm: ManifoldToplevel, sections: (CrossSection | null)[], keep: Keep): CrossSection | null {
+  const present = sections.filter((s): s is CrossSection => s !== null)
+  if (present.length === 0) return null
+  if (present.length === 1) return present[0]
+  return keep(wasm.CrossSection.union(present))
+}
+
+/** Devuelve la misma forma sin agujeros interiores. */
+function fillHoles(wasm: ManifoldToplevel, shape: CrossSection): CrossSection {
+  const outers = shape.toPolygons().filter((poly) => signedArea(poly) > 0)
+  return new wasm.CrossSection(outers, 'NonZero')
 }
 
 function heartContour(): SimplePolygon {

@@ -240,6 +240,45 @@ button.link {
   gap: 8px;
 }
 
+button.align-start {
+  align-self: flex-start;
+  padding: 0;
+}
+
+.upload {
+  display: block;
+  padding: 18px;
+  border: 1px dashed var(--muted);
+  border-radius: 10px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.upload:hover {
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.upload input {
+  display: none;
+}
+
+.mask-preview {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.mask-preview img,
+.mask-preview canvas {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: repeating-conic-gradient(#2a2d34 0 25%, #22252c 0 50%) 0 0 / 16px 16px;
+}
+
 /* Vista previa */
 .preview {
   position: relative;

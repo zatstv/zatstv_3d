@@ -14,7 +14,10 @@ Abre la URL que muestra la terminal (normalmente http://localhost:5173).
 
 ## Qué hace
 
-- **Formas:** contorno del texto, rectángulo redondeado, círculo/óvalo, hexágono y corazón.
+- **Formas:** contorno (sigue el texto y la imagen), rectángulo redondeado, círculo/óvalo, hexágono y corazón.
+- **Imagen de referencia:** se sube un PNG/JPG y se usa su silueta, ya sea como parte de la forma
+  (p. ej. una mascota con su nombre encima) o encima de la base como el texto (p. ej. un logo).
+  Usa la transparencia del PNG si la tiene; si no, lo oscuro de la imagen.
 - **Texto:** varias líneas, 5 fuentes, en relieve, grabado o a ras (para dos colores).
 - **Argolla:** agujero a la izquierda, derecha o arriba, con diámetro y pared ajustables.
 - **Exportar:** un STL de una pieza, o `base.stl` + `texto.stl` para imprimir en dos colores con el AMS lite.
@@ -27,11 +30,12 @@ Abre la URL que muestra la terminal (normalmente http://localhost:5173).
 - Three.js / React Three Fiber para la vista previa
 - [manifold-3d](https://github.com/elalish/manifold) para las operaciones booleanas (modelos sólidos, sin errores de malla)
 - opentype.js para convertir fuentes en contornos
+- Trazado de siluetas propio (marching squares) en `src/lib/image.ts`
 
 Todo el código de geometría está en `src/lib/keychain.ts`.
 
 ## Próximos pasos
 
-- Foto de referencia → silueta (trazado de imagen) o relieve
+- Foto de referencia → relieve (litofanía)
 - Guardar y cargar plantillas
 - Más objetos además de llaveros

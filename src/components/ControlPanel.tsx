@@ -1,7 +1,9 @@
-import type { ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 import { FONTS, type FontId } from '../lib/fonts'
+import type { ImageField } from '../lib/image'
 import type {
   HolePosition,
+  ImageRole,
   KeychainParams,
   KeychainResult,
   ShapeId,
@@ -10,7 +12,7 @@ import type {
 import { downloadStl } from '../lib/stl'
 
 const SHAPES: { id: ShapeId; label: string }[] = [
-  { id: 'textFit', label: 'Contorno del texto' },
+  { id: 'textFit', label: 'Contorno' },
   { id: 'rect', label: 'Rectángulo' },
   { id: 'circle', label: 'Círculo / óvalo' },
   { id: 'hexagon', label: 'Hexágono' },
@@ -21,6 +23,11 @@ const TEXT_MODES: { id: TextMode; label: string; hint: string }[] = [
   { id: 'relief', label: 'Relieve', hint: 'Las letras sobresalen de la base.' },
   { id: 'engrave', label: 'Grabado', hint: 'Las letras se hunden en la base.' },
   { id: 'flush', label: 'A ras (2 colores)', hint: 'Las letras quedan al nivel de la base, en otro color.' },
+]
+
+const IMAGE_ROLES: { id: ImageRole; label: string }[] = [
+  { id: 'base', label: 'Parte de la forma' },
+  { id: 'detail', label: 'Encima, como el texto' },
 ]
 
 const HOLE_POSITIONS: { id: HolePosition; label: string }[] = [
@@ -40,6 +47,9 @@ interface ControlPanelProps {
   detailColor: string
   onBaseColor: (color: string) => void
   onDetailColor: (color: string) => void
+  imageField: ImageField | null
+  onImageFile: (file: File) => void
+  onRemoveImage: () => void
 }
 
 export function ControlPanel({
@@ -53,6 +63,9 @@ export function ControlPanel({
   detailColor,
   onBaseColor,
   onDetailColor,
+  imageField,
+  onImageFile,
+  onRemoveImage,
 }: ControlPanelProps) {
   const fileName = slugify(p.text) || 'llavero'
 
@@ -69,7 +82,7 @@ export function ControlPanel({
         <Segmented options={SHAPES} value={p.shape} onChange={(shape) => onChange({ shape })} />
         {p.shape === 'textFit' ? (
           <NumberField
-            label="Margen alrededor del texto"
+            label="Margen alrededor"
             value={p.outlinePadding}
             min={1}
             max={10}
@@ -150,6 +163,65 @@ export function ControlPanel({
         )}
       </Section>
 
+      <Section title="Imagen de referencia">
+        {imageField ? (
+          <>
+            <MaskPreview field={imageField} threshold={p.imageThreshold} invert={p.imageInvert} />
+            <NumberField
+              label="Sensibilidad"
+              value={Math.round(p.imageThreshold * 100)}
+              min={5}
+              max={95}
+              step={1}
+              unit="%"
+              onChange={(v) => onChange({ imageThreshold: v / 100 })}
+            />
+            <label className="check">
+              <input type="checkbox" checked={p.imageInvert} onChange={(e) => onChange({ imageInvert: e.target.checked })} />
+              <span>{imageField.fromAlpha ? 'Invertir (usar lo transparente)' : 'Invertir (usar lo claro)'}</span>
+            </label>
+            <Segmented options={IMAGE_ROLES} value={p.imageRole} onChange={(imageRole) => onChange({ imageRole })} />
+            <NumberField label="Ancho de la silueta" value={p.imageSize} min={5} max={120} step={1} onChange={(imageSize) => onChange({ imageSize })} />
+            <NumberField label="Mover imagen ↔" value={p.imageOffsetX} min={-80} max={80} step={0.5} onChange={(imageOffsetX) => onChange({ imageOffsetX })} />
+            <NumberField label="Mover imagen ↕" value={p.imageOffsetY} min={-80} max={80} step={0.5} onChange={(imageOffsetY) => onChange({ imageOffsetY })} />
+            <NumberField
+              label="Suavizado"
+              value={p.imageSmoothing}
+              min={0}
+              max={2}
+              step={0.1}
+              onChange={(imageSmoothing) => onChange({ imageSmoothing })}
+            />
+            <label className="check">
+              <input type="checkbox" checked={p.imageFillHoles} onChange={(e) => onChange({ imageFillHoles: e.target.checked })} />
+              <span>Rellenar huecos interiores</span>
+            </label>
+            <button className="link align-start" onClick={onRemoveImage}>
+              Quitar imagen
+            </button>
+          </>
+        ) : (
+          <>
+            <label className="upload">
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) onImageFile(file)
+                  e.target.value = ''
+                }}
+              />
+              <span>Subir imagen…</span>
+            </label>
+            <p className="hint">
+              Se usa su silueta. Funciona mejor con logos, dibujos o PNG con fondo transparente. Para una foto (una
+              mascota, por ejemplo), primero quítale el fondo: muchos celulares lo hacen al mantener presionado el sujeto.
+            </p>
+          </>
+        )}
+      </Section>
+
       <Section title="Argolla">
         <label className="check">
           <input type="checkbox" checked={p.holeEnabled} onChange={(e) => onChange({ holeEnabled: e.target.checked })} />
@@ -212,6 +284,37 @@ export function ControlPanel({
         )}
       </Section>
     </aside>
+  )
+}
+
+/** Muestra qué partes de la imagen se van a usar con la sensibilidad actual. */
+function MaskPreview({ field, threshold, invert }: { field: ImageField; threshold: number; invert: boolean }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    canvas.width = field.width
+    canvas.height = field.height
+    const ctx = canvas.getContext('2d')!
+    const pixels = ctx.createImageData(field.width, field.height)
+    for (let i = 0; i < field.ink.length; i++) {
+      const ink = invert ? 1 - field.ink[i] : field.ink[i]
+      if (ink >= threshold) {
+        pixels.data[i * 4] = 224
+        pixels.data[i * 4 + 1] = 53
+        pixels.data[i * 4 + 2] = 107
+        pixels.data[i * 4 + 3] = 255
+      }
+    }
+    ctx.putImageData(pixels, 0, 0)
+  }, [field, threshold, invert])
+
+  return (
+    <div className="mask-preview">
+      <img src={field.dataUrl} alt="Imagen original" />
+      <canvas ref={canvasRef} aria-label="Silueta detectada" />
+    </div>
   )
 }
 
